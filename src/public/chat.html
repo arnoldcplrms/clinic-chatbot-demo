@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chatbot Console</title>
+    <style>
+      :root {
+        --bg-1: #f7f2e9;
+        --bg-2: #f0e2cc;
+        --ink: #1a1a1a;
+        --muted: #5b564f;
+        --panel: rgba(255, 255, 255, 0.82);
+        --line: rgba(0, 0, 0, 0.08);
+        --accent: #0f766e;
+        --accent-2: #115e59;
+        --user: #0f766e;
+        --bot: #111827;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 15% 15%, rgba(255, 255, 255, 0.8), transparent 40%),
+          radial-gradient(circle at 85% 10%, rgba(17, 94, 89, 0.2), transparent 35%),
+          linear-gradient(140deg, var(--bg-1), var(--bg-2));
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .app {
+        width: min(920px, 100%);
+        height: min(86vh, 860px);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
+        overflow: hidden;
+      }
+
+      .top {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .title {
+        font-size: 16px;
+        letter-spacing: 0.02em;
+        font-weight: 700;
+      }
+
+      .session {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      input[type="text"] {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--ink);
+        width: 220px;
+        font: inherit;
+      }
+
+      .messages {
+        padding: 14px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .msg {
+        max-width: min(88%, 720px);
+        padding: 11px 13px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+        animation: fadeUp 140ms ease-out;
+      }
+
+      .msg.user {
+        align-self: flex-end;
+        color: #f8fafc;
+        background: linear-gradient(165deg, var(--user), var(--accent-2));
+        border: none;
+      }
+
+      .msg.bot {
+        align-self: flex-start;
+        background: #ffffff;
+        color: var(--bot);
+      }
+
+      .msg.meta {
+        align-self: center;
+        font-size: 12px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.65);
+      }
+
+      .composer {
+        border-top: 1px solid var(--line);
+        padding: 12px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 48px;
+        max-height: 150px;
+        resize: vertical;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.94);
+        padding: 12px;
+        color: var(--ink);
+        font: inherit;
+      }
+
+      button {
+        border: none;
+        border-radius: 12px;
+        padding: 0 18px;
+        font: inherit;
+        font-weight: 700;
+        color: #ffffff;
+        background: linear-gradient(165deg, var(--accent), var(--accent-2));
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+      }
+
+      .hint {
+        padding: 0 14px 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 700px) {
+        body {
+          padding: 12px;
+        }
+
+        .app {
+          height: min(92vh, 900px);
+          border-radius: 14px;
+        }
+
+        .session {
+          width: 100%;
+        }
+
+        input[type="text"] {
+          width: 100%;
+        }
+
+        .composer {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          height: 44px;
+        }
+      }
+
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <div class="title">Chatbot Console</div>
+        <label class="session">
+          Session ID
+          <input id="sessionId" type="text" placeholder="test-user-1" />
+        </label>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="composer" class="composer">
+        <textarea
+          id="messageInput"
+          placeholder="Ask to list events or schedule an appointment..."
+          required
+        ></textarea>
+        <button id="sendBtn" type="submit">Send</button>
+      </form>
+      <div class="hint">Press Enter to send. Press Shift+Enter for a new line.</div>
+    </main>
+
+    <script>
+      const messagesEl = document.getElementById('messages');
+      const composerEl = document.getElementById('composer');
+      const inputEl = document.getElementById('messageInput');
+      const sessionEl = document.getElementById('sessionId');
+      const sendBtnEl = document.getElementById('sendBtn');
+
+      const SESSION_KEY = 'chatbot_console_session_id';
+      const defaultSession =
+        localStorage.getItem(SESSION_KEY) || 'web-' + crypto.randomUUID();
+      sessionEl.value = defaultSession;
+
+      sessionEl.addEventListener('change', () => {
+        localStorage.setItem(SESSION_KEY, sessionEl.value.trim() || defaultSession);
+      });
+
+      inputEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          composerEl.requestSubmit();
+        }
+      });
+
+      function addMessage(kind, text) {
+        const node = document.createElement('div');
+        node.className = 'msg ' + kind;
+        node.textContent = text;
+        messagesEl.appendChild(node);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      addMessage('meta', 'Connected. This page calls POST /api/chat.');
+
+      composerEl.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const message = inputEl.value.trim();
+        if (!message) return;
+
+        const sessionId = (sessionEl.value || defaultSession).trim();
+        localStorage.setItem(SESSION_KEY, sessionId);
+
+        addMessage('user', message);
+        inputEl.value = '';
+        inputEl.focus();
+
+        sendBtnEl.disabled = true;
+        addMessage('meta', 'Assistant is thinking...');
+
+        try {
+          const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, message }),
+          });
+
+          const data = await response.json().catch(() => ({}));
+
+          const pending = messagesEl.querySelector('.msg.meta:last-child');
+          if (pending && pending.textContent === 'Assistant is thinking...') {
+            pending.remove();
+          }
+
+          if (!response.ok) {
+            const text = data?.message || JSON.stringify(data);
+            addMessage('bot', 'Error (' + response.status + '): ' + text);
+            return;
+          }
+
+          addMessage('bot', data.reply || '(No reply)');
+        } catch (error) {
+          const pending = messagesEl.querySelector('.msg.meta:last-child');
+          if (pending && pending.textContent === 'Assistant is thinking...') {
+            pending.remove();
+          }
+
+          addMessage(
+            'bot',
+            'Network error: ' + (error instanceof Error ? error.message : String(error))
+          );
+        } finally {
+          sendBtnEl.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

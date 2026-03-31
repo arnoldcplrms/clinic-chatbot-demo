@@ -1,0 +1,8 @@
+# Bun configuration
+[install]
+# Uncomment to enable frozen lockfile in CI environments
+# frozenLockfile = true
+
+[run]
+# Treat all TypeScript files as Bun scripts by default
+bun = true
