@@ -10,6 +10,10 @@ const chatBodySchema = z.object({
   message: z.string().min(1, 'message must be a non-empty string'),
 });
 
+const initBodySchema = z.object({
+  sessionId: z.string().min(1, 'sessionId must be a non-empty string'),
+});
+
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.get('/chat', async (_request: FastifyRequest, reply: FastifyReply) => {
     if (env.NODE_ENV !== 'development') {
@@ -24,6 +28,36 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       reply.status(500).send('Unable to load chat page');
     }
   });
+
+  /**
+   * POST /api/chat/init
+   *
+   * Initialises a session and returns the assistant's opening greeting
+   * (intro, services, business hours). Call this once when the chat UI loads.
+   *
+   * Body: { sessionId: string }
+   * Response: { reply: string }
+   */
+  app.post(
+    '/api/chat/init',
+    async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+      const parseResult = initBodySchema.safeParse(request.body);
+
+      if (!parseResult.success) {
+        reply.status(400).send({
+          statusCode: 400,
+          error: 'Validation Error',
+          issues: parseResult.error.issues,
+        });
+        return;
+      }
+
+      const { sessionId } = parseResult.data;
+      const intro = await aiService.initSession(sessionId);
+
+      reply.send({ reply: intro });
+    }
+  );
 
   /**
    * POST /api/chat

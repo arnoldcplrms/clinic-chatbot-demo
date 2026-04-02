@@ -28,7 +28,7 @@ export const env = createEnv({
     GOOGLE_REDIRECT_URI: z
       .string()
       .url('GOOGLE_REDIRECT_URI must be a valid URL'),
-    GOOGLE_REFRESH_TOKEN: z.string().min(1, 'GOOGLE_REFRESH_TOKEN is required'),
+    GOOGLE_REFRESH_TOKEN: z.string().min(1).optional(),
     GOOGLE_CALENDAR_ID: z.string().default('primary'),
 
     // ── Facebook Messenger ────────────────────────────────────────────────────

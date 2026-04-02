@@ -2,11 +2,16 @@ import type { BusinessRules } from '@/config/business-rules.config';
 import { promptConfig } from '@/config/prompt.config';
 import { getCurrentDateTimeString } from '@/utils/date.utils';
 
+function capitalize(str: string): string {
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
 /**
  * Builds the full system prompt that is prepended to every conversation.
  * Called fresh on each chat turn so runtime rule updates are immediately
  * reflected without restarting the server.
  */
+
 export function buildSystemPrompt(rules: BusinessRules): string {
   const now = getCurrentDateTimeString(rules.timezone);
 
@@ -66,8 +71,4 @@ ${responseStyleText}
 
 ## Operating Instructions
 ${operatingInstructionsText}`;
-}
-
-function capitalize(str: string): string {
-  return str.charAt(0).toUpperCase() + str.slice(1);
 }

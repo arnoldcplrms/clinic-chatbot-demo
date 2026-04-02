@@ -261,6 +261,41 @@
 
       addMessage('meta', 'Connected. This page calls POST /api/chat.');
 
+      async function initChat() {
+        const sessionId = (sessionEl.value || defaultSession).trim();
+        sendBtnEl.disabled = true;
+        addMessage('meta', 'Assistant is thinking...');
+
+        try {
+          const response = await fetch('/api/chat/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+
+          const data = await response.json().catch(() => ({}));
+
+          const pending = messagesEl.querySelector('.msg.meta:last-child');
+          if (pending && pending.textContent === 'Assistant is thinking...') {
+            pending.remove();
+          }
+
+          if (response.ok) {
+            addMessage('bot', data.reply || '(No reply)');
+          }
+        } catch {
+          const pending = messagesEl.querySelector('.msg.meta:last-child');
+          if (pending && pending.textContent === 'Assistant is thinking...') {
+            pending.remove();
+          }
+        } finally {
+          sendBtnEl.disabled = false;
+          inputEl.focus();
+        }
+      }
+
+      initChat();
+
       composerEl.addEventListener('submit', async (event) => {
         event.preventDefault();
 

@@ -65,7 +65,7 @@ curl http://localhost:3000/health
 | `GOOGLE_CLIENT_ID`     | Yes      | —                                                          | Google OAuth2 client ID                         |
 | `GOOGLE_CLIENT_SECRET` | Yes      | —                                                          | Google OAuth2 client secret                     |
 | `GOOGLE_REDIRECT_URI`  | Yes      | —                                                          | OAuth2 redirect URI                             |
-| `GOOGLE_REFRESH_TOKEN` | Yes      | —                                                          | Long-lived Calendar refresh token               |
+| `GOOGLE_REFRESH_TOKEN` | No       | —                                                          | Long-lived Calendar refresh token after OAuth   |
 | `GOOGLE_CALENDAR_ID`   | No       | `primary`                                                  | Target Google Calendar                          |
 | `FB_VERIFY_TOKEN`      | Yes      | —                                                          | Secret token for Facebook webhook verification  |
 | `FB_PAGE_ACCESS_TOKEN` | Yes      | —                                                          | Facebook Page access token for sending messages |
@@ -73,9 +73,12 @@ curl http://localhost:3000/health
 ### Obtaining a Google OAuth2 Refresh Token
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com) and create an **OAuth 2.0 Client ID** (application type: **Web application**).
-2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` in your `.env`.
-3. Use [OAuth Playground](https://developers.google.com/oauthplayground/) or a small local script to complete the OAuth flow with the scope `https://www.googleapis.com/auth/calendar`.
-4. Paste the returned refresh token into `GOOGLE_REFRESH_TOKEN`. This token does not expire unless revoked.
+2. Add your callback URL to the OAuth client, for example `http://localhost:3000/api/auth/google/callback`.
+3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` in your `.env`.
+4. Start the server and open `GET /api/auth/google` to get the Google consent URL.
+5. Sign in and approve the Calendar scope.
+6. Google redirects back to `/api/auth/google/callback`, which exchanges the code and shows the `GOOGLE_REFRESH_TOKEN` value you should save in `.env`.
+7. Restart the server after saving the refresh token.
 
 ---
 
@@ -144,6 +147,8 @@ curl -X POST http://localhost:3000/api/config/business-rules \
 | `DELETE` | `/api/events/:id`            | —                                               | Delete a calendar event          |
 | `GET`    | `/api/config/business-rules` | —                                               | Get current business rules       |
 | `POST`   | `/api/config/business-rules` | Partial `BusinessRules` object                  | Update business rules at runtime |
+| `GET`    | `/api/auth/google`           | `?state=optional`                               | Create Google OAuth consent URL  |
+| `GET`    | `/api/auth/google/callback`  | `?code=...`                                     | Exchange auth code for tokens    |
 
 ### Example: Chat (testing outside Messenger)
 

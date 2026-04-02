@@ -13,8 +13,8 @@ import {
 import { sessionService } from '@/services/session.service';
 import { CalendarService } from '@/services/calendar.service';
 
-// Safety cap: prevents infinite tool-call loops if the model misbehaves
-const MAX_TOOL_ITERATIONS = 10;
+const MAX_PROVIDER_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 2000;
 
 export class AIService {
   private readonly openai: OpenAI;
@@ -26,6 +26,37 @@ export class AIService {
       baseURL: env.GEMINI_BASE_URL,
     });
     this.calendarService = new CalendarService();
+  }
+
+  /**
+   * Initialises a session and returns the assistant's opening message.
+   * Injects a hidden trigger so the model produces the intro greeting
+   * (services + business hours) before any real user turn.
+   */
+  async initSession(sessionId: string): Promise<string> {
+    const systemPrompt = buildSystemPrompt(businessRules);
+
+    const history = sessionService.getHistory(sessionId);
+
+    // Only run init once per session
+    if (history.length > 0) {
+      const firstAssistant = history.find((m) => m.role === 'assistant');
+      if (firstAssistant) {
+        return typeof firstAssistant.content === 'string'
+          ? firstAssistant.content
+          : '';
+      }
+    }
+
+    history.unshift({ role: 'system', content: systemPrompt });
+
+    // Hidden trigger - never shown to the user, prompts the intro greeting
+    sessionService.appendMessage(sessionId, {
+      role: 'user',
+      content: '[session_start]',
+    });
+
+    return await this.runAgentLoop(sessionId);
   }
 
   /**
@@ -53,7 +84,17 @@ export class AIService {
       content: userMessage,
     });
 
-    return this.runAgentLoop(sessionId);
+    try {
+      return await this.runAgentLoop(sessionId);
+    } catch (error) {
+      const status = getErrorStatusCode(error);
+
+      if (status === 429) {
+        return 'I am currently experiencing high traffic from the chat provider. Please wait a moment and try again.';
+      }
+
+      throw error;
+    }
   }
 
   /**
@@ -61,83 +102,153 @@ export class AIService {
    * the model produces a final text response or the iteration limit is hit.
    */
   private async runAgentLoop(sessionId: string): Promise<string> {
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const messages = sessionService.getHistory(sessionId);
+    const messages = sessionService.getHistory(sessionId);
 
-      const response = await this.openai.chat.completions.create({
-        model: env.GEMINI_MODEL,
-        messages,
-        tools: calendarToolDefinitions,
-        tool_choice: 'auto',
-      });
+    // First completion: tools enabled so booking flows can invoke calendar ops.
+    const firstResponse = await this.createChatCompletionWithRetry(
+      messages,
+      true
+    );
 
-      const choice = response.choices[0];
-      if (!choice) throw new Error('AI returned an empty choices array');
+    const firstChoice = firstResponse.choices[0];
+    if (!firstChoice) throw new Error('AI returned an empty choices array');
 
-      const { message, finish_reason } = choice;
+    const firstMessage = firstChoice.message as ChatCompletionMessage;
+    sessionService.appendMessage(
+      sessionId,
+      firstMessage as ChatCompletionMessageParam
+    );
 
-      // Persist the assistant's turn (may contain tool_calls or final content)
-      sessionService.appendMessage(
-        sessionId,
-        message as ChatCompletionMessageParam
-      );
-
-      if (finish_reason === 'stop') {
-        // Model is satisfied — return the final text response
-        return (message as ChatCompletionMessage).content ?? '';
-      }
-
-      if (
-        finish_reason === 'tool_calls' &&
-        (message as ChatCompletionMessage).tool_calls?.length
-      ) {
-        // Execute all requested tool calls in parallel
-        const toolResults = await Promise.all(
-          ((message as ChatCompletionMessage).tool_calls ?? []).map(
-            async (tc) => {
-              let args: Record<string, unknown>;
-              try {
-                args = JSON.parse(tc.function.arguments) as Record<
-                  string,
-                  unknown
-                >;
-              } catch {
-                // Malformed JSON arguments — pass an empty object so the dispatcher
-                // can return a meaningful error rather than crashing
-                args = {};
-              }
-
-              const result = await executeToolCall(
-                tc.function.name,
-                args,
-                this.calendarService
-              );
-
-              return {
-                role: 'tool' as const,
-                tool_call_id: tc.id,
-                content: result,
-              };
-            }
-          )
-        );
-
-        // Append each tool result so the model can process them
-        for (const result of toolResults) {
-          sessionService.appendMessage(sessionId, result);
-        }
-
-        // Continue the loop — the AI will now read the tool results and reply
-        continue;
-      }
-
-      // Unexpected finish reason — return whatever content we have
-      return (message as ChatCompletionMessage).content ?? '';
+    if (firstChoice.finish_reason === 'stop') {
+      return normalizeAssistantContent(firstMessage.content);
     }
 
-    // If we exhausted iterations, return a graceful failure message
-    return "I'm sorry, I was unable to complete your request after multiple attempts. Please try again.";
+    if (
+      firstChoice.finish_reason !== 'tool_calls' ||
+      !firstMessage.tool_calls?.length
+    ) {
+      return normalizeAssistantContent(firstMessage.content);
+    }
+
+    // Execute one tool round only to avoid long model/tool chains per turn.
+    const toolResults = await Promise.all(
+      (firstMessage.tool_calls ?? []).map(async (tc) => {
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+        } catch {
+          args = {};
+        }
+
+        const result = await executeToolCall(
+          tc.function.name,
+          args,
+          this.calendarService
+        );
+
+        return {
+          role: 'tool' as const,
+          tool_call_id: tc.id,
+          content: result,
+        };
+      })
+    );
+
+    for (const result of toolResults) {
+      sessionService.appendMessage(sessionId, result);
+    }
+
+    // Final completion: tools disabled to prevent additional tool rounds.
+    const finalResponse = await this.createChatCompletionWithRetry(
+      sessionService.getHistory(sessionId),
+      false
+    );
+
+    const finalChoice = finalResponse.choices[0];
+    if (!finalChoice) throw new Error('AI returned an empty choices array');
+
+    const finalMessage = finalChoice.message as ChatCompletionMessage;
+    sessionService.appendMessage(
+      sessionId,
+      finalMessage as ChatCompletionMessageParam
+    );
+
+    return normalizeAssistantContent(finalMessage.content);
   }
+
+  private async createChatCompletionWithRetry(
+    messages: ChatCompletionMessageParam[],
+    allowTools: boolean
+  ) {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= MAX_PROVIDER_RETRIES; attempt++) {
+      try {
+        return await this.openai.chat.completions.create({
+          model: env.GEMINI_MODEL,
+          messages,
+          ...(allowTools
+            ? {
+                tools: calendarToolDefinitions,
+                tool_choice: 'auto' as const,
+              }
+            : { tool_choice: 'none' as const }),
+        });
+      } catch (error) {
+        lastError = error;
+
+        const status = getErrorStatusCode(error);
+        const shouldRetry =
+          // Avoid retry storms on rate-limit responses.
+          status !== 429 &&
+          ((status !== undefined && status >= 500) || status === 408) &&
+          attempt < MAX_PROVIDER_RETRIES;
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        const retryAfterMs = getRetryAfterDelayMs(error);
+        const backoffMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
+        await sleep(retryAfterMs ?? backoffMs);
+      }
+    }
+
+    throw lastError;
+  }
+}
+
+function getErrorStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+
+  const candidate = (error as { status?: unknown }).status;
+  return typeof candidate === 'number' ? candidate : undefined;
+}
+
+function getRetryAfterDelayMs(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+
+  const headers = (error as { headers?: unknown }).headers;
+  if (!headers || typeof headers !== 'object') return undefined;
+
+  const retryAfter = (headers as Record<string, unknown>)['retry-after'];
+  if (typeof retryAfter !== 'string') return undefined;
+
+  const seconds = Number(retryAfter);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+
+  return Math.floor(seconds * 1000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeAssistantContent(content: string | null): string {
+  const text = content?.trim();
+  if (text) return text;
+
+  return 'I completed your request, but could not format a full response. Please ask me to summarize and I will provide the details.';
 }
 
 // Singleton instance used across the application
