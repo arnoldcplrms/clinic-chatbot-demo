@@ -163,10 +163,36 @@ export async function executeToolCall(
   try {
     switch (toolName) {
       case 'create_event': {
+        const startDateTime = args['startDateTime'] as string;
+        const endDateTime = args['endDateTime'] as string;
+
+        // Check for conflicting events in the requested time window before creating
+        const overlapping = await calendarService.listEvents({
+          timeMin: startDateTime,
+          timeMax: endDateTime,
+          maxResults: 5,
+        });
+
+        if (overlapping.length > 0) {
+          const conflictTitles = overlapping
+            .map(
+              (e) => `"${e.summary}" (${e.start.dateTime} – ${e.end.dateTime})`
+            )
+            .join(', ');
+          return JSON.stringify({
+            success: false,
+            error: 'SCHEDULE_CONFLICT',
+            message:
+              `The requested time slot is already booked: ${conflictTitles}. ` +
+              'Inform the user that the schedule is unavailable and suggest the next available slot ' +
+              'within the same day (after the conflicting event ends) or the same time on the next business day.',
+          });
+        }
+
         const event = await calendarService.createEvent({
           title: args['title'] as string,
-          startDateTime: args['startDateTime'] as string,
-          endDateTime: args['endDateTime'] as string,
+          startDateTime,
+          endDateTime,
           description: args['description'] as string | undefined,
           attendees: args['attendees'] as string[] | undefined,
           location: args['location'] as string | undefined,

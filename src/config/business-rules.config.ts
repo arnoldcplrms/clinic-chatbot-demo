@@ -42,6 +42,8 @@ export interface BusinessRules {
   maxBookingsPerDay: number;
   /** Services that can be booked */
   services: Service[];
+  /** HMO providers accepted by the clinic */
+  acceptedHMOs: string[];
 }
 
 // ─── Mutable singleton — updated in-place by updateBusinessRules() ──────────
@@ -78,7 +80,16 @@ export let businessRules: BusinessRules = {
       duration: 30,
       description: '30-minute follow-up appointment',
     },
+    {
+      id: 'laboratory-tests',
+      name: 'Laboratory Tests',
+      duration: 45,
+      description:
+        '45-minute session for laboratory tests and results discussion',
+    },
   ],
+
+  acceptedHMOs: ['Maxicare', 'Intellicare', 'PhilCare'],
 };
 
 /**

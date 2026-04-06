@@ -64,13 +64,26 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       // Acknowledge receipt immediately — Facebook requires 200 within 5 s
       reply.status(200).send('EVENT_RECEIVED');
 
+      // Log full raw payload in development for easier debugging
+      app.log.debug({ body }, 'Messenger webhook event received');
+
       // Process each messaging event independently
       for (const entry of body.entry ?? []) {
         for (const event of entry.messaging ?? []) {
+          app.log.info(
+            {
+              senderPsid: event.sender?.id,
+              hasMessage: !!event.message,
+              hasPostback: !!event.postback,
+            },
+            'Processing messaging event'
+          );
           const senderPsid = event.sender?.id;
-          const messageText = event.message?.text;
 
-          // Ignore non-text events (attachments, postbacks handled separately)
+          // Accept plain text messages OR Ice Breaker / postback taps
+          const messageText =
+            event.message?.text ?? resolvePostbackText(event.postback?.payload);
+
           if (!senderPsid || !messageText) continue;
 
           // Fire-and-forget — errors are caught inside handleMessengerMessage
@@ -89,6 +102,22 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
 }
 
 /**
+ * Maps Ice Breaker payload constants to natural-language phrases so the AI
+ * receives a meaningful prompt instead of an ALL_CAPS constant.
+ */
+const POSTBACK_LABELS: Record<string, string> = {
+  INQUIRY: 'I would like to inquire about your clinic.',
+  SERVICES: 'What services do you offer?',
+  BOOK_CONSULTATION: 'I would like to book a consultation.',
+  BOOK_FOLLOWUP: 'I would like to book a follow-up appointment.',
+};
+
+function resolvePostbackText(payload?: string): string | undefined {
+  if (!payload) return undefined;
+  return POSTBACK_LABELS[payload] ?? payload;
+}
+
+/**
  * Orchestrates the full flow for a single Messenger message:
  * show typing → call AI → hide typing → send reply.
  * Errors are caught so that individual message failures don't crash the loop.
@@ -99,22 +128,28 @@ async function handleMessengerMessage(
   messageText: string
 ): Promise<void> {
   try {
-    await messengerService.sendTypingIndicator(senderPsid, true);
+    await messengerService
+      .sendTypingIndicator(senderPsid, true)
+      .catch(() => {});
 
     const reply = await aiService.chat(senderPsid, messageText);
 
-    await messengerService.sendTypingIndicator(senderPsid, false);
+    await messengerService
+      .sendTypingIndicator(senderPsid, false)
+      .catch(() => {});
     await messengerService.sendMessage(senderPsid, reply);
   } catch (err) {
     app.log.error({ err, senderPsid }, 'Error processing Messenger message');
 
+    const userFacingMessage =
+      err instanceof Error && err.message
+        ? err.message
+        : 'Sorry, I ran into a problem. Please try again in a moment.';
+
     // Best-effort: attempt to inform the user something went wrong
     try {
       await messengerService.sendTypingIndicator(senderPsid, false);
-      await messengerService.sendMessage(
-        senderPsid,
-        'Sorry, I ran into a problem. Please try again in a moment.'
-      );
+      await messengerService.sendMessage(senderPsid, userFacingMessage);
     } catch {
       // Suppress secondary send failures
     }

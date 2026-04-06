@@ -22,6 +22,11 @@ export const env = createEnv({
       .default('https://generativelanguage.googleapis.com/v1beta/openai/'),
     GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
+    // ── AI — Groq via OpenAI-compatible endpoint ─────────────────────────────
+    GROQ_API_KEY: z.string().min(1).optional(),
+    GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
+    GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+
     // ── Google Calendar OAuth2 ────────────────────────────────────────────────
     GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
     GOOGLE_CLIENT_SECRET: z.string().min(1, 'GOOGLE_CLIENT_SECRET is required'),

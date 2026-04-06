@@ -15,11 +15,67 @@ function capitalize(str: string): string {
 export function buildSystemPrompt(rules: BusinessRules): string {
   const now = getCurrentDateTimeString(rules.timezone);
 
-  const hoursText = Object.entries(rules.businessHours)
-    .map(([day, range]) =>
-      range
-        ? `  - ${capitalize(day)}: ${range.start}–${range.end}`
-        : `  - ${capitalize(day)}: Closed`
+  // Group consecutive days that share the same hours into a single line,
+  // e.g. "Monday–Friday: 09:00–17:00" instead of repeating each day.
+  const DAY_ORDER = [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+  ];
+  type HoursGroup = {
+    days: string[];
+    range: { start: string; end: string } | null;
+  };
+  const groups: HoursGroup[] = [];
+  for (const day of DAY_ORDER) {
+    const range = rules.businessHours[day] ?? null;
+    const last = groups[groups.length - 1];
+    const sameAsLast =
+      last &&
+      (range === null
+        ? last.range === null
+        : last.range !== null &&
+          last.range.start === range.start &&
+          last.range.end === range.end);
+    if (sameAsLast) {
+      last.days.push(day);
+    } else {
+      groups.push({ days: [day], range });
+    }
+  }
+  const formatRange = (r: { start: string; end: string }) => {
+    const fmt = (t: string) => {
+      const [hStr, mStr] = t.split(':');
+      const h = parseInt(hStr, 10);
+      const m = parseInt(mStr, 10);
+      const suffix = h >= 12 ? 'pm' : 'am';
+      const h12 = h % 12 === 0 ? 12 : h % 12;
+      return m === 0 ? `${h12}${suffix}` : `${h12}:${mStr}${suffix}`;
+    };
+    return `${fmt(r.start)}–${fmt(r.end)}`;
+  };
+  const hoursText = groups
+    .filter((g) => g.range !== null)
+    .map((g) => {
+      const label =
+        g.days.length === 1
+          ? capitalize(g.days[0])
+          : `${capitalize(g.days[0])}–${capitalize(g.days[g.days.length - 1])}`;
+      return `  - ${label}: ${formatRange(g.range!)}`;
+    })
+    .concat(
+      groups.some((g) => g.range === null)
+        ? [
+            `  - Closed: ${groups
+              .filter((g) => g.range === null)
+              .flatMap((g) => g.days.map(capitalize))
+              .join(', ')} & Public Holidays`,
+          ]
+        : []
     )
     .join('\n');
 
@@ -36,6 +92,11 @@ export function buildSystemPrompt(rules: BusinessRules): string {
           ', '
         )}`
       : 'No blackout dates are currently scheduled.';
+
+  const hmosText =
+    rules.acceptedHMOs && rules.acceptedHMOs.length > 0
+      ? rules.acceptedHMOs.map((hmo) => `  - ${hmo}`).join('\n')
+      : '  - No HMO providers configured yet.';
 
   const responseStyleText = promptConfig.responseStyle
     .map((item, index) => `${index + 1}. ${item}`)
@@ -58,6 +119,9 @@ ${hoursText}
 
 ## Services Offered
 ${servicesText}
+
+## Accepted HMO Providers
+${hmosText}
 
 ## Booking Policies
 - Default appointment duration: ${rules.defaultBookingDuration} minutes
