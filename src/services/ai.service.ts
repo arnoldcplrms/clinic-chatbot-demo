@@ -121,41 +121,27 @@ export class AIService {
   /**
    * The core agentic loop. Repeatedly calls the AI and executes tool calls
    * until the model reaches finish_reason "stop" or the iteration cap is hit.
-   * Each iteration handles exactly one round of tool calls, keeping each
-   * generation simple and preventing malformed tool-call arguments.
    */
   private async runAgentLoop(sessionId: string): Promise<string> {
     const MAX_ITERATIONS = 8;
     let toolCallsExecuted = false;
-    // Track whether list_events returned results suggesting a conflict
-    let listEventsFoundConflict = false;
-    let listEventsConflictDetails = '';
+    const listConflict = { found: false, details: '' };
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       const messages = sessionService.getHistory(sessionId);
       console.log(
-        `[runAgentLoop] iteration=${iteration} history_len=${messages.length} toolCallsExecuted=${toolCallsExecuted}`
+        `[runAgentLoop] iteration=${iteration} history_len=${messages.length}`
       );
 
+      // ── 1. Call the model ────────────────────────────────────────────────
       let response;
       try {
         response = await this.createChatCompletionWithRetry(messages, true);
       } catch (error) {
-        console.error(
-          `[runAgentLoop] createChatCompletionWithRetry threw at iteration=${iteration}:`,
-          {
-            status: getErrorStatusCode(error),
-            message: error instanceof Error ? error.message : String(error),
-            toolCallsExecuted,
-          }
-        );
-        // After at least one tool round, a 400 (failed_generation) usually
-        // means the model struggled to format a follow-up tool call from the
-        // tool results (e.g. a schedule conflict response). Break out and let
-        // the plain-text fallback below produce a proper reply for the user.
-        if (toolCallsExecuted && getErrorStatusCode(error) === 400) {
-          break;
-        }
+        // After at least one tool round, a 400 (failed_generation) means the
+        // model struggled to format a follow-up tool call. Break out and let
+        // the plain-text fallback produce a proper reply.
+        if (toolCallsExecuted && getErrorStatusCode(error) === 400) break;
         throw error;
       }
 
@@ -173,104 +159,137 @@ export class AIService {
         message as ChatCompletionMessageParam
       );
 
-      // Model is done — return the text response
+      // ── 2. No tool calls → model is done ────────────────────────────────
       if (choice.finish_reason === 'stop' || !message.tool_calls?.length) {
         return normalizeAssistantContent(message.content);
       }
 
-      // Execute all tool calls in this round sequentially
-      for (const tc of message.tool_calls) {
-        let args: Record<string, unknown>;
-        try {
-          args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-        } catch {
-          args = {};
-        }
-
-        const result = await executeToolCall(
-          tc.function.name,
-          args,
-          this.calendarService
-        );
-
-        console.log(`[runAgentLoop] tool=${tc.function.name} result=${result}`);
-
-        // If list_events returned events for a narrow time window, flag it as a
-        // potential conflict so we can use it in the fallback path if Groq later
-        // fails to generate a response.
-        if (tc.function.name === 'list_events') {
-          const parsed = tryParseJson(result);
-          if (
-            parsed?.success === true &&
-            Array.isArray(parsed.events) &&
-            (parsed.events as unknown[]).length > 0
-          ) {
-            const requestedMin = args['timeMin'] as string | undefined;
-            const requestedMax = args['timeMax'] as string | undefined;
-            // Treat as a conflict check if the window is ≤ 4 hours
-            if (requestedMin && requestedMax) {
-              const windowMs =
-                new Date(requestedMax).getTime() -
-                new Date(requestedMin).getTime();
-              if (windowMs <= 4 * 60 * 60 * 1000) {
-                listEventsFoundConflict = true;
-                const events = parsed.events as Array<{
-                  summary?: string;
-                  start?: { dateTime?: string };
-                  end?: { dateTime?: string };
-                }>;
-                listEventsConflictDetails = events
-                  .map(
-                    (e) =>
-                      `"${e.summary ?? 'Appointment'}" (${
-                        e.start?.dateTime ?? ''
-                      } – ${e.end?.dateTime ?? ''})`
-                  )
-                  .join(', ');
-              }
-            }
-          }
-        }
-
-        // Detect a schedule conflict and respond directly — avoids a follow-up
-        // AI call that Groq often rejects with 400 (failed_generation) when the
-        // tool result contains conflict data.
-        const conflictReplyEarly = extractScheduleConflictReply([
-          { role: 'tool', tool_call_id: tc.id, content: result },
-        ]);
-        if (conflictReplyEarly) return conflictReplyEarly;
-
-        sessionService.appendMessage(sessionId, {
-          role: 'tool' as const,
-          tool_call_id: tc.id,
-          content: result,
-        });
-
-        await sleep(1500);
-      }
+      // ── 3. Execute tool round ────────────────────────────────────────────
+      const earlyReply = await this.executeToolRound(
+        sessionId,
+        message.tool_calls,
+        listConflict
+      );
+      if (earlyReply) return earlyReply;
 
       toolCallsExecuted = true;
     }
 
-    // Before falling back to a plain-text call, check if a schedule conflict
-    // was already recorded in the tool results — if so, respond directly.
-    const conflictReply = extractScheduleConflictReply(
+    // ── 4. Fallback: conflict check or force plain-text ──────────────────
+    return this.resolveFallback(sessionId, listConflict);
+  }
+
+  /**
+   * Executes all tool calls for a single model round sequentially.
+   * Returns a ready-to-send conflict reply string if a conflict is detected
+   * early, or null to continue the loop.
+   */
+  private async executeToolRound(
+    sessionId: string,
+    toolCalls: NonNullable<ChatCompletionMessage['tool_calls']>,
+    listConflict: { found: boolean; details: string }
+  ): Promise<string | null> {
+    for (const tc of toolCalls) {
+      let args: Record<string, unknown>;
+      try {
+        args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      } catch {
+        args = {};
+      }
+
+      const result = await executeToolCall(
+        tc.function.name,
+        args,
+        this.calendarService
+      );
+      console.log(`[runAgentLoop] tool=${tc.function.name} result=${result}`);
+
+      this.updateListEventsConflict(
+        tc.function.name,
+        args,
+        result,
+        listConflict
+      );
+
+      // Detect a conflict early — avoids a follow-up AI call that Groq often
+      // rejects with 400 (failed_generation) when tool results contain conflict data.
+      const conflictReply = extractScheduleConflictReply([
+        { role: 'tool', tool_call_id: tc.id, content: result },
+      ]);
+      if (conflictReply) return conflictReply;
+
+      sessionService.appendMessage(sessionId, {
+        role: 'tool' as const,
+        tool_call_id: tc.id,
+        content: result,
+      });
+
+      await sleep(1500);
+    }
+    return null;
+  }
+
+  /**
+   * Updates the listConflict tracker when list_events returns events in a
+   * narrow time window (≤ 4 hours), indicating a likely scheduling conflict.
+   */
+  private updateListEventsConflict(
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string,
+    conflict: { found: boolean; details: string }
+  ): void {
+    if (toolName !== 'list_events') return;
+
+    const parsed = tryParseJson(result);
+    if (
+      !parsed?.success ||
+      !Array.isArray(parsed.events) ||
+      !parsed.events.length
+    )
+      return;
+
+    const timeMin = args['timeMin'] as string | undefined;
+    const timeMax = args['timeMax'] as string | undefined;
+    if (!timeMin || !timeMax) return;
+
+    const windowMs = new Date(timeMax).getTime() - new Date(timeMin).getTime();
+    if (windowMs > 4 * 60 * 60 * 1000) return;
+
+    conflict.found = true;
+    conflict.details = (
+      parsed.events as Array<{
+        summary?: string;
+        start?: { dateTime?: string };
+        end?: { dateTime?: string };
+      }>
+    )
+      .map(
+        (e) =>
+          `"${e.summary ?? 'Appointment'}" (${e.start?.dateTime ?? ''} – ${
+            e.end?.dateTime ?? ''
+          })`
+      )
+      .join(', ');
+  }
+
+  /**
+   * Called after the iteration cap is reached (or after a 400 mid-loop).
+   * Checks for a captured conflict first, then forces a final plain-text call.
+   */
+  private async resolveFallback(
+    sessionId: string,
+    listConflict: { found: boolean; details: string }
+  ): Promise<string> {
+    const conflictMessage = buildConflictMessage(listConflict.details);
+
+    const historyConflict = extractScheduleConflictReply(
       sessionService.getHistory(sessionId)
     );
-    if (conflictReply) return conflictReply;
+    if (historyConflict) return historyConflict;
+    if (listConflict.found) return conflictMessage;
 
-    // Also handle the case where list_events found overlapping events but
-    // create_event was never reached (model tried to respond in text and failed).
-    if (listEventsFoundConflict) {
-      return (
-        `I'm sorry, that time slot is not available — ${
-          listEventsConflictDetails || 'another appointment'
-        } is already booked. ` +
-        `Please choose a different time, and I'll be happy to schedule your appointment.`
-      );
-    }
-
-    // Iteration cap reached (or 400 after tool execution) — force a plain text response
+    // Iteration cap reached — force a plain-text response without tools
     try {
       const finalResponse = await this.createChatCompletionWithRetry(
         sessionService.getHistory(sessionId),
@@ -286,20 +305,12 @@ export class AIService {
       );
       return normalizeAssistantContent(finalMessage.content);
     } catch (error) {
-      // Plain-text fallback also failed (often 400 from Groq on large histories).
-      // Do one final history scan before giving up.
-      const lateConflictReply = extractScheduleConflictReply(
+      // Plain-text fallback also failed — do one last conflict scan before giving up.
+      const lateConflict = extractScheduleConflictReply(
         sessionService.getHistory(sessionId)
       );
-      if (lateConflictReply) return lateConflictReply;
-      if (listEventsFoundConflict) {
-        return (
-          `I'm sorry, that time slot is not available — ${
-            listEventsConflictDetails || 'another appointment'
-          } is already booked. ` +
-          `Please choose a different time, and I'll be happy to schedule your appointment.`
-        );
-      }
+      if (lateConflict) return lateConflict;
+      if (listConflict.found) return conflictMessage;
       throw error;
     }
   }
@@ -370,6 +381,15 @@ function getRetryAfterDelayMs(error: unknown): number | undefined {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildConflictMessage(details: string): string {
+  return (
+    `I'm sorry, that time slot is not available — ${
+      details || 'another appointment'
+    } is already booked. ` +
+    `Please choose a different time, and I'll be happy to schedule your appointment.`
+  );
 }
 
 function normalizeAssistantContent(content: string | null): string {
