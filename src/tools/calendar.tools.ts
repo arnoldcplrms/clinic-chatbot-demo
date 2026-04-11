@@ -1,5 +1,9 @@
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
 import type { CalendarService } from '@/services/calendar.service';
+import { businessRules } from '@/config/business-rules.config';
+import { logger } from '@/utils/logger';
+
+const log = logger.child({ service: 'CalendarTools' });
 
 // ─── Tool Definitions (JSON Schema) ──────────────────────────────────────────
 
@@ -166,14 +170,30 @@ export async function executeToolCall(
         const startDateTime = args['startDateTime'] as string;
         const endDateTime = args['endDateTime'] as string;
 
-        // Check for conflicting events in the requested time window before creating
+        // Check for events that overlap with the requested time window.
+        // This includes whole-day events, which the clinic owner uses to
+        // mark a day as closed (no bookings accepted).
         const overlapping = await calendarService.listEvents({
           timeMin: startDateTime,
           timeMax: endDateTime,
           maxResults: 5,
         });
 
-        if (overlapping.length > 0) {
+        // Whole-day events always block bookings regardless of the
+        // allowBookingConflicts toggle — they signal a closed day.
+        const allDayBlock = overlapping.find((e) => e.isAllDay);
+        if (allDayBlock) {
+          return JSON.stringify({
+            success: false,
+            error: 'DAY_CLOSED',
+            message:
+              `The clinic is closed on this day ("${allDayBlock.summary}"). ` +
+              'No bookings can be made. Please suggest the next available business day.',
+          });
+        }
+
+        // Regular time-overlap check — only enforced when conflicts are not allowed.
+        if (!businessRules.allowBookingConflicts && overlapping.length > 0) {
           const conflictTitles = overlapping
             .map(
               (e) => `"${e.summary}" (${e.start.dateTime} – ${e.end.dateTime})`
@@ -243,6 +263,31 @@ export async function executeToolCall(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const status = (err as Record<string, unknown>)?.['response']
+      ? (
+          (err as Record<string, unknown>)['response'] as Record<
+            string,
+            unknown
+          >
+        )?.['status']
+      : undefined;
+    const responseData = (err as Record<string, unknown>)?.['response']
+      ? (
+          (err as Record<string, unknown>)['response'] as Record<
+            string,
+            unknown
+          >
+        )?.['data']
+      : undefined;
+    log.error(
+      {
+        tool: toolName,
+        status,
+        responseData,
+        err: err instanceof Error ? err : new Error(message),
+      },
+      'calendar tool call failed'
+    );
     return JSON.stringify({ success: false, error: message });
   }
 }

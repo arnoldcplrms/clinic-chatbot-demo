@@ -12,6 +12,9 @@ import {
 } from '@/tools/calendar.tools';
 import { sessionService } from '@/services/session.service';
 import { CalendarService } from '@/services/calendar.service';
+import { logger } from '@/utils/logger';
+
+const log = logger.child({ service: 'AIService' });
 
 const MAX_PROVIDER_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 2000;
@@ -89,11 +92,14 @@ export class AIService {
     } catch (error) {
       const status = getErrorStatusCode(error);
 
-      console.error('[AIService.chat] runAgentLoop threw:', {
-        status,
-        message: error instanceof Error ? error.message : String(error),
-        body: (error as Record<string, unknown>)?.['error'],
-      });
+      log.error(
+        {
+          status,
+          err: error instanceof Error ? error : new Error(String(error)),
+          body: (error as Record<string, unknown>)?.['error'],
+        },
+        'runAgentLoop threw'
+      );
 
       if (status === 429) {
         return 'I am currently experiencing high traffic from the chat provider. Please wait a moment and try again.';
@@ -129,8 +135,9 @@ export class AIService {
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       const messages = sessionService.getHistory(sessionId);
-      console.log(
-        `[runAgentLoop] iteration=${iteration} history_len=${messages.length}`
+      log.debug(
+        { iteration, historyLen: messages.length },
+        'agent loop iteration'
       );
 
       // ── 1. Call the model ────────────────────────────────────────────────
@@ -149,10 +156,12 @@ export class AIService {
       if (!choice) throw new Error('AI returned an empty choices array');
 
       const message = choice.message as ChatCompletionMessage;
-      console.log(
-        `[runAgentLoop] finish_reason=${choice.finish_reason} tool_calls=${
-          message.tool_calls?.length ?? 0
-        }`
+      log.debug(
+        {
+          finishReason: choice.finish_reason,
+          toolCalls: message.tool_calls?.length ?? 0,
+        },
+        'model response'
       );
       sessionService.appendMessage(
         sessionId,
@@ -202,7 +211,23 @@ export class AIService {
         args,
         this.calendarService
       );
-      console.log(`[runAgentLoop] tool=${tc.function.name} result=${result}`);
+
+      const parsedResult = tryParseJson(result);
+      if (
+        parsedResult &&
+        parsedResult['success'] === false &&
+        parsedResult['error'] !== 'SCHEDULE_CONFLICT'
+      ) {
+        log.error(
+          { tool: tc.function.name, result: parsedResult },
+          'tool call returned failure'
+        );
+      } else {
+        log.debug(
+          { tool: tc.function.name, result: parsedResult ?? result },
+          'tool call succeeded'
+        );
+      }
 
       this.updateListEventsConflict(
         tc.function.name,
@@ -211,18 +236,21 @@ export class AIService {
         listConflict
       );
 
+      // Always append the tool result first so history stays valid even if we
+      // return early. An orphaned assistant tool_calls message (with no matching
+      // tool result) corrupts the session and makes every subsequent API call fail.
+      sessionService.appendMessage(sessionId, {
+        role: 'tool' as const,
+        tool_call_id: tc.id,
+        content: result,
+      });
+
       // Detect a conflict early — avoids a follow-up AI call that Groq often
       // rejects with 400 (failed_generation) when tool results contain conflict data.
       const conflictReply = extractScheduleConflictReply([
         { role: 'tool', tool_call_id: tc.id, content: result },
       ]);
       if (conflictReply) return conflictReply;
-
-      sessionService.appendMessage(sessionId, {
-        role: 'tool' as const,
-        tool_call_id: tc.id,
-        content: result,
-      });
 
       await sleep(1500);
     }
@@ -349,7 +377,17 @@ export class AIService {
 
         const retryAfterMs = getRetryAfterDelayMs(error);
         const backoffMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
-        await sleep(retryAfterMs ?? backoffMs);
+        const delayMs = retryAfterMs ?? backoffMs;
+        log.warn(
+          {
+            attempt,
+            status,
+            delayMs,
+            err: error instanceof Error ? error : new Error(String(error)),
+          },
+          'AI provider request failed, retrying'
+        );
+        await sleep(delayMs);
       }
     }
 

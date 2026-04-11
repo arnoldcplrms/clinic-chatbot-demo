@@ -40,6 +40,13 @@ export interface BusinessRules {
   blackoutDates: string[];
   /** Hard cap on the number of bookings per calendar day */
   maxBookingsPerDay: number;
+  /**
+   * When true, the AI is allowed to book over existing appointments.
+   * When false (default), any overlapping event blocks the booking.
+   * Note: whole-day events always block bookings regardless of this flag —
+   * they are treated as a "day closed" signal set by the clinic owner.
+   */
+  allowBookingConflicts: boolean;
   /** Services that can be booked */
   services: Service[];
   /** HMO providers accepted by the clinic */
@@ -66,6 +73,7 @@ export let businessRules: BusinessRules = {
   bufferMinutes: 15,
   blackoutDates: [],
   maxBookingsPerDay: 8,
+  allowBookingConflicts: false,
 
   services: [
     {

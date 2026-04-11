@@ -21,6 +21,8 @@ export interface CalendarEvent {
   attendees?: CalendarEventAttendee[];
   status?: string;
   htmlLink?: string;
+  /** True when the event is a whole-day event (no specific time set) */
+  isAllDay?: boolean;
 }
 
 // ─── Input Types for CRUD Operations ─────────────────────────────────────────

@@ -54,7 +54,9 @@ export class CalendarService {
       orderBy: 'startTime',
     });
 
-    return (response.data.items ?? []).map(mapGoogleEvent);
+    return (response.data.items ?? [])
+      .filter((item) => !!item.id)
+      .map(mapGoogleEvent);
   }
 
   async createEvent(input: CreateEventInput): Promise<CalendarEvent> {
@@ -159,5 +161,6 @@ function mapGoogleEvent(raw: calendar_v3.Schema$Event): CalendarEvent {
     attendees,
     status: raw.status ?? undefined,
     htmlLink: raw.htmlLink ?? undefined,
+    isAllDay: !raw.start?.dateTime && !!raw.start?.date,
   };
 }
