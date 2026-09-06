@@ -14,8 +14,18 @@ export const env = createEnv({
       .enum(['development', 'production', 'test'])
       .default('development'),
 
+    // ── AI provider selection ────────────────────────────────────────────────
+    // Active provider (see src/config/ai-providers.config.ts). Switch providers
+    // by changing this one value; keys/models are picked up automatically.
+    AI_PROVIDER: z.enum(['opencode', 'gemini', 'groq']).default('opencode'),
+
+    // ── Opencode Go (OpenAI-compatible) ──────────────────────────────────────
+    OPENCODE_API_KEY: z.string().min(1).optional(),
+    OPENCODE_BASE_URL: z.string().url().default('https://opencode.ai/zen/go/v1'),
+    OPENCODE_MODEL: z.string().default('mimo-v2.5'),
+
     // ── AI — Google Gemini via OpenAI-compatible endpoint ────────────────────
-    GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),
+    GEMINI_API_KEY: z.string().min(1).optional(),
     GEMINI_BASE_URL: z
       .string()
       .url()
@@ -27,13 +37,8 @@ export const env = createEnv({
     GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
     GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
 
-    // ── Google Calendar OAuth2 ────────────────────────────────────────────────
-    GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
-    GOOGLE_CLIENT_SECRET: z.string().min(1, 'GOOGLE_CLIENT_SECRET is required'),
-    GOOGLE_REDIRECT_URI: z
-      .string()
-      .url('GOOGLE_REDIRECT_URI must be a valid URL'),
-    GOOGLE_REFRESH_TOKEN: z.string().min(1).optional(),
+    // ── Google Calendar (service account) ────────────────────────────────────
+    GOOGLE_SERVICE_ACCOUNT: z.string().min(1, 'GOOGLE_SERVICE_ACCOUNT is required'),
     GOOGLE_CALENDAR_ID: z.string().default('primary'),
 
     // ── Facebook Messenger ────────────────────────────────────────────────────

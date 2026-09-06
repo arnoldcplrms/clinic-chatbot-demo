@@ -3,8 +3,8 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionMessage,
 } from 'openai/resources/chat/completions';
-import { env } from '@/config/env';
 import { businessRules } from '@/config/business-rules.config';
+import { getActiveProvider } from '@/config/ai-providers.config';
 import { buildSystemPrompt } from '@/utils/prompt-builder';
 import {
   calendarToolDefinitions,
@@ -21,13 +21,16 @@ const RETRY_BASE_DELAY_MS = 2000;
 
 export class AIService {
   private readonly openai: OpenAI;
+  private readonly model: string;
   private readonly calendarService: CalendarService;
 
   constructor() {
+    const provider = getActiveProvider();
     this.openai = new OpenAI({
-      apiKey: env.GROQ_API_KEY ?? env.GEMINI_API_KEY,
-      baseURL: env.GROQ_API_KEY ? env.GROQ_BASE_URL : env.GEMINI_BASE_URL,
+      apiKey: provider.apiKey,
+      baseURL: provider.baseURL,
     });
+    this.model = provider.model;
     this.calendarService = new CalendarService();
   }
 
@@ -251,8 +254,6 @@ export class AIService {
         { role: 'tool', tool_call_id: tc.id, content: result },
       ]);
       if (conflictReply) return conflictReply;
-
-      await sleep(1500);
     }
     return null;
   }
@@ -352,7 +353,7 @@ export class AIService {
     for (let attempt = 0; attempt <= MAX_PROVIDER_RETRIES; attempt++) {
       try {
         return await this.openai.chat.completions.create({
-          model: env.GROQ_API_KEY ? env.GROQ_MODEL : env.GEMINI_MODEL,
+          model: this.model,
           messages,
           ...(allowTools
             ? {

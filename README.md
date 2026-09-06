@@ -1,6 +1,6 @@
 # AI Chatbot Backend
 
-A production-ready AI chatbot backend built with **Bun.js**, **Fastify**, and **TypeScript**. It integrates Google Gemini 2.5 Flash (via the OpenAI-compatible endpoint) with Google Calendar for intelligent booking automation, and connects to Facebook Messenger for end-user messaging.
+A production-ready AI chatbot backend built with **Bun.js**, **Fastify**, and **TypeScript**. It integrates a pluggable AI provider (OpenCode Go, Gemini, Groq — all OpenAI-compatible) with Google Calendar for intelligent booking automation, and connects to Facebook Messenger for end-user messaging.
 
 ## Stack
 
@@ -8,7 +8,7 @@ A production-ready AI chatbot backend built with **Bun.js**, **Fastify**, and **
 | ---------- | ---------------------------------------- |
 | Runtime    | Bun.js                                   |
 | Framework  | Fastify 4 + TypeScript (strict)          |
-| AI         | Google Gemini 2.5 Flash via `openai` SDK |
+| AI         | Pluggable OpenAI-compatible provider (`AI_PROVIDER` env) |
 | Calendar   | Google Calendar API v3 (`googleapis`)    |
 | Validation | Zod                                      |
 | Env        | `@t3-oss/env-core`                       |
@@ -18,8 +18,8 @@ A production-ready AI chatbot backend built with **Bun.js**, **Fastify**, and **
 ### 1. Prerequisites
 
 - [Bun](https://bun.sh) >= 1.1
-- A [Google AI Studio](https://aistudio.google.com) API key
-- A Google Cloud project with the Calendar API enabled and OAuth2 credentials
+- An API key for an AI provider (default: [OpenCode Go](https://opencode.ai/docs/go/))
+- A Google Cloud project with the Calendar API enabled and a service account key
 - A Facebook Developer App with Messenger channel _(optional — only needed for Messenger integration)_
 
 ### 2. Install Dependencies
@@ -59,26 +59,34 @@ curl http://localhost:3000/health
 | ---------------------- | -------- | ---------------------------------------------------------- | ----------------------------------------------- |
 | `PORT`                 | No       | `3000`                                                     | HTTP listen port                                |
 | `NODE_ENV`             | No       | `development`                                              | `development`, `production`, or `test`          |
-| `GEMINI_API_KEY`       | Yes      | —                                                          | Google AI Studio API key                        |
+| `AI_PROVIDER`          | No       | `opencode`                                                 | Active provider: `opencode`, `gemini`, or `groq` |
+| `OPENCODE_API_KEY`     | *        | —                                                          | OpenCode Go API key (required when `AI_PROVIDER=opencode`) |
+| `OPENCODE_BASE_URL`    | No       | `https://opencode.ai/zen/go/v1`                            | OpenCode Go OpenAI-compatible base URL          |
+| `OPENCODE_MODEL`       | No       | `mimo-v2.5`                                                | OpenCode Go model identifier                    |
+| `GEMINI_API_KEY`       | *        | —                                                          | Google AI Studio API key (required when `AI_PROVIDER=gemini`) |
 | `GEMINI_BASE_URL`      | No       | `https://generativelanguage.googleapis.com/v1beta/openai/` | Gemini OpenAI-compatible base URL               |
 | `GEMINI_MODEL`         | No       | `gemini-2.5-flash`                                         | Model identifier                                |
-| `GOOGLE_CLIENT_ID`     | Yes      | —                                                          | Google OAuth2 client ID                         |
-| `GOOGLE_CLIENT_SECRET` | Yes      | —                                                          | Google OAuth2 client secret                     |
-| `GOOGLE_REDIRECT_URI`  | Yes      | —                                                          | OAuth2 redirect URI                             |
-| `GOOGLE_REFRESH_TOKEN` | No       | —                                                          | Long-lived Calendar refresh token after OAuth   |
+| `GROQ_API_KEY`         | *        | —                                                          | Groq API key (required when `AI_PROVIDER=groq`) |
+| `GROQ_BASE_URL`        | No       | `https://api.groq.com/openai/v1`                           | Groq OpenAI-compatible base URL                 |
+| `GROQ_MODEL`           | No       | `llama-3.3-70b-versatile`                                  | Model identifier                                |
+| `GOOGLE_SERVICE_ACCOUNT` | Yes    | —                                                          | One-line service account key JSON               |
 | `GOOGLE_CALENDAR_ID`   | No       | `primary`                                                  | Target Google Calendar                          |
 | `FB_VERIFY_TOKEN`      | Yes      | —                                                          | Secret token for Facebook webhook verification  |
 | `FB_PAGE_ACCESS_TOKEN` | Yes      | —                                                          | Facebook Page access token for sending messages |
 
-### Obtaining a Google OAuth2 Refresh Token
+> `*` Only the key for the provider selected by `AI_PROVIDER` is required.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com) and create an **OAuth 2.0 Client ID** (application type: **Web application**).
-2. Add your callback URL to the OAuth client, for example `http://localhost:3000/api/auth/google/callback`.
-3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` in your `.env`.
-4. Start the server and open `GET /api/auth/google` to get the Google consent URL.
-5. Sign in and approve the Calendar scope.
-6. Google redirects back to `/api/auth/google/callback`, which exchanges the code and shows the `GOOGLE_REFRESH_TOKEN` value you should save in `.env`.
-7. Restart the server after saving the refresh token.
+### Setting up Google Calendar (service account)
+
+1. In [Google Cloud Console](https://console.cloud.google.com), enable the **Google Calendar API** for your project.
+2. Create a **service account** and download its JSON key.
+3. Flatten the JSON to one line and put it in `.env`:
+   ```bash
+   echo "GOOGLE_SERVICE_ACCOUNT=$(jq -c . path/to-key.json)" >> .env
+   ```
+4. Grant the calendar access: share your Google Calendar with the service account's
+   `client_email` (as **Make changes to events**), and set `GOOGLE_CALENDAR_ID` to your
+   calendar address — or keep `primary` to book on the service account's own calendar.
 
 ---
 
@@ -147,8 +155,6 @@ curl -X POST http://localhost:3000/api/config/business-rules \
 | `DELETE` | `/api/events/:id`            | —                                               | Delete a calendar event          |
 | `GET`    | `/api/config/business-rules` | —                                               | Get current business rules       |
 | `POST`   | `/api/config/business-rules` | Partial `BusinessRules` object                  | Update business rules at runtime |
-| `GET`    | `/api/auth/google`           | `?state=optional`                               | Create Google OAuth consent URL  |
-| `GET`    | `/api/auth/google/callback`  | `?code=...`                                     | Exchange auth code for tokens    |
 
 ### Example: Chat (testing outside Messenger)
 

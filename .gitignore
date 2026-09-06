@@ -10,6 +10,8 @@ dist/
 .env.local
 .env.*.local
 
+# Google service account keys
+clinic-booking-demo-*.json
 # macOS
 .DS_Store
 
